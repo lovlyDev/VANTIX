@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Run only the bundled VANTIX compute sidecar",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [{ "name": "binaries/vantix", "sidecar": true, "args": true }]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [{ "name": "binaries/vantix", "sidecar": true, "args": true }]
+    },
+    "shell:allow-kill",
+    "shell:allow-stdin-write",
+    "updater:default",
+    "process:allow-restart"
+  ]
+}

@@ -1,0 +1,20 @@
+[package]
+name = "vantix-desktop"
+version = "0.1.0"
+description = "VANTIX TON vanity generator desktop application"
+authors = ["VANTIX"]
+edition = "2021"
+
+[lib]
+name = "vantix_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde_json = "1.0.151"
+tauri = { version = "2", features = [] }
+tauri-plugin-process = "2.4.0"
+tauri-plugin-shell = "2"
+tauri-plugin-updater = "2.13.0"

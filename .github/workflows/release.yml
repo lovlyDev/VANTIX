@@ -1,0 +1,121 @@
+name: Release
+on:
+  push:
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  quality:
+    uses: ./.github/workflows/ci.yml
+  build:
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-x64
+          - os: ubuntu-22.04
+            platform: linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python tools/check-version.py
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build pkg-config libvulkan-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2
+      - name: Install vcpkg on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP/vcpkg"
+          & "$env:RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+          "VCPKG_ROOT=$env:RUNNER_TEMP/vcpkg" >> $env:GITHUB_ENV
+      - name: Install vcpkg on Linux
+        if: runner.os == 'Linux'
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/vcpkg"
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+      - run: npm ci
+        working-directory: desktop
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: ./tools/build-release-windows.ps1
+      - name: Build Linux installers
+        if: runner.os == 'Linux'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: bash tools/build-release-linux.sh
+      - name: Upload Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: vantix-${{ matrix.platform }}
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/VANTIX_*_x64-setup.exe
+            desktop/src-tauri/target/release/bundle/nsis/VANTIX_*_x64-setup.exe.sig
+          if-no-files-found: error
+      - name: Upload Linux installers
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: vantix-${{ matrix.platform }}
+          path: |
+            desktop/src-tauri/target/release/bundle/deb/*.deb
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage.sig
+          if-no-files-found: error
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: vantix-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish VANTIX release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing to overwrite it.' >&2
+            exit 1
+          fi
+          mkdir release-ready
+          find release-assets -type f -print -exec cp -t release-ready -- {} +
+          test -n "$(find release-ready -maxdepth 1 -name '*.exe' -print -quit)"
+          test -n "$(find release-ready -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$(find release-ready -maxdepth 1 -name '*.AppImage' -print -quit)"
+          python tools/make-update-manifest.py release-ready "$RELEASE_TAG" "$GITHUB_REPOSITORY"
+          cd release-ready
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "VANTIX ${RELEASE_TAG#v}" --notes-file docs/release-notes-v0.1.0.md
+          gh release upload "$RELEASE_TAG" release-ready/*
+          gh release edit "$RELEASE_TAG" --draft=false --latest
